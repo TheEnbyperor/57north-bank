@@ -1,0 +1,6 @@
+# Space seperated lines of <barcode> <price in pence> <descriptor>
+# Blank lines and lines with a # at the start are ignored
+
+4029764001401 120 Club-Mate Granat
+011152431697 200 Ramune Citrus
+011152225654 200 Ramune Lychee

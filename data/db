@@ -1,0 +1,91 @@
+(
+    users: {
+        "q": (
+            id: "q",
+            balance: 480,
+        ),
+    },
+    transactions: [
+        (
+            timestamp: "2022-10-19T16:45:00.930617Z",
+            actor: User("q"),
+            transaction: Purchase(
+                products: [
+                    (
+                        barcode: UpcA([
+                            0,
+                            1,
+                            1,
+                            1,
+                            5,
+                            2,
+                            4,
+                            3,
+                            1,
+                            6,
+                            9,
+                            7,
+                        ]),
+                        name: "Ramune Citrus",
+                        price: 200,
+                    ),
+                    (
+                        barcode: Ean13([
+                            4,
+                            0,
+                            2,
+                            9,
+                            7,
+                            6,
+                            4,
+                            0,
+                            0,
+                            1,
+                            4,
+                            0,
+                            1,
+                        ]),
+                        name: "Club-Mate Granat",
+                        price: 120,
+                    ),
+                ],
+                total: 320,
+            ),
+        ),
+        (
+            timestamp: "2022-10-19T16:51:24.052517Z",
+            actor: User("q"),
+            transaction: Purchase(
+                products: [
+                    (
+                        barcode: UpcA([
+                            0,
+                            1,
+                            1,
+                            1,
+                            5,
+                            2,
+                            4,
+                            3,
+                            1,
+                            6,
+                            9,
+                            7,
+                        ]),
+                        name: "Ramune Citrus",
+                        price: 200,
+                    ),
+                ],
+                total: 200,
+            ),
+        ),
+        (
+            timestamp: "2022-10-19T17:00:38.464881Z",
+            actor: User("q"),
+            transaction: Deposit(
+                amount: 1000,
+                method: BankTransfer,
+            ),
+        ),
+    ],
+)
