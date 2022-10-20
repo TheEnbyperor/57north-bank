@@ -1,5 +1,6 @@
 # Space seperated lines of <barcode> <price in pence> <descriptor>
 # Blank lines and lines with a # at the start are ignored
+# 6, 8, 12, 13, and 14 digit barcodes accepted
 
 4029764001401 120 Club-Mate Granat
 011152431697 200 Ramune Citrus
