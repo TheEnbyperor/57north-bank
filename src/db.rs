@@ -129,6 +129,26 @@ impl DB {
         Ok(u)
     }
 
+    pub fn apply_cart_to_cash(&self, cart: &crate::Cart) -> Result<(), String> {
+        self.0.load().map_err(|e| format!("{:?}", e))?;
+
+        {
+            let mut data = self.0.borrow_data_mut().map_err(|e| format!("{:?}", e))?;
+
+            data.transactions.push(Transaction {
+                timestamp: Utc::now(),
+                actor: TransactionActor::Cash,
+                transaction: TransactionType::Purchase {
+                    products: cart.products.clone(),
+                    total: cart.total(),
+                }
+            });
+        }
+
+        self.0.save().map_err(|e| format!("{:?}", e))?;
+        Ok(())
+    }
+
     pub fn deposit_user(&self, id: &str, amount: u32, method: DepositMethod) -> Result<User, String> {
         self.0.load().map_err(|e| format!("{:?}", e))?;
 

@@ -7,6 +7,12 @@ pub struct Product {
     pub price: u32,
 }
 
+impl Product {
+    pub fn disp_price(&self) -> String {
+        format!("£{:.2}", self.price as f64 / 100.0)
+    }
+}
+
 pub fn read_products() -> Result<Products, String> {
     let mut products = std::collections::HashMap::new();
 

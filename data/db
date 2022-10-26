@@ -1,4 +1,19 @@
 (
     users: {},
-    transactions: [],
+    transactions: [
+        (
+            timestamp: "2022-10-26T11:43:43.922728Z",
+            actor: Cash,
+            transaction: Purchase(
+                products: [
+                    (
+                        barcode: ((0, 0, 0, 1, 1, 1, 5, 2, 4, 3, 1, 6, 9, 7)),
+                        name: "Ramune Citrus",
+                        price: 200,
+                    ),
+                ],
+                total: 200,
+            ),
+        ),
+    ],
 )

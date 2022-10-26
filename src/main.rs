@@ -8,8 +8,8 @@ mod barcode;
 mod db;
 mod products;
 
-const FORBIDDEN_USERS: [&str; 11] = ["help", "?", "reload", "products", "adduser", "deposit",
-    "users", "deposits", "purchases", "abort", "cancel"];
+const FORBIDDEN_USERS: [&str; 12] = ["help", "?", "reload", "products", "adduser", "deposit",
+    "users", "deposits", "purchases", "abort", "cancel", "cash"];
 
 pub struct Cart {
     products: Vec<products::Product>
@@ -26,12 +26,16 @@ impl Cart {
         self.products.iter().map(|p| p.price).sum()
     }
 
+    fn disp_total(&self) -> String {
+        format!("£{:.2}", self.total() as f64 / 100.0)
+    }
+
     fn print(&self) {
         println!("{}", Style::new().bold().underline().paint("Current cart"));
         for product in &self.products {
-            println!("- {} (£{:.2})", product.name, product.price as f64 / 100.0);
+            println!("- {} ({})", product.name, product.disp_price());
         }
-        println!("Total: £{:.2}", self.total() as f64 / 100.0);
+        println!("Total: {}", self.disp_total());
     }
 }
 
@@ -70,74 +74,92 @@ fn main() -> std::io::Result<()> {
             let command = args.next().unwrap();
             let args = args.collect::<Vec<_>>();
 
-            match (barcode::Barcode::try_parse(command), args.is_empty()) {
-                (Some(barcode), true) => {
-                    if !barcode.check_digit() {
-                        println!("Invalid barcode")
-                    } else if let Some(product) = product_store.get(&barcode) {
-                        println!("Adding {} to cart", product.name);
-                        if cart.is_none() {
-                            cart = Some(Cart::new());
-                        }
-
-                        let c_cart = cart.as_mut().unwrap();
-                        c_cart.products.push(product.clone());
-                        c_cart.print();
-                    } else {
-                        println!("Unknown product");
-                    }
+            match command {
+                "help" | "?" => help(),
+                "reload" => reload(&mut product_store),
+                "products" => products(&product_store),
+                "adduser" => adduser(&db, &args),
+                "deposit" => deposit(&db, &args),
+                "users" => users(&db),
+                "deposits" => deposits(&db),
+                "purchases" => purchases(&db),
+                "abort" | "cancel" => {
+                    cart = None;
+                    println!("Cart abandoned");
                 },
-                _ => match (db.get_user(command), args.is_empty(), cart.is_some()) {
-                    (Some(user), true, false) => {
-                        println!("{}", Style::new().underline().paint(format!("User {}", user.0.id)));
-                        println!("Balance: {}", user.0.disp_balance());
-                        println!("{}", Style::new().underline().paint("Recent transactions"));
-                        for t in user.1.iter().rev().take(10) {
-                            match &t.transaction {
-                                db::TransactionType::Deposit {
-                                    amount, method
-                                } => println!("Deposit £{:.2} ({})", *amount as f64 / 100.0, match method {
-                                    db::DepositMethod::Cash => "cash",
-                                    db::DepositMethod::BankTransfer => "bank transfer"
-                                }),
-                                db::TransactionType::Purchase {
-                                    total, products
-                                } => {
-                                    println!("Purchase (total £{:.2})", *total as f64 / 100.0);
-                                    for p in products {
-                                        println!("- {} (£{:.2})", p.name, p.price as f64 / 100.0);
-                                    }
-                                }
-                            }
-                            println!("Timestamp: {}", t.timestamp);
-                            println!()
-                        }
-                    },
-                    (Some(user), true, true) => {
-                        match db.apply_cart_to_user(&user.0.id, cart.as_ref().unwrap()) {
-                            Ok(user) => {
-                                println!("Charged to user {}", Style::new().bold().paint(&user.id));
-                                println!("New balance: {}", user.disp_balance());
+                "cash" => {
+                    if cart.is_some() {
+                        let c_cart = cart.as_ref().unwrap();
+                        match db.apply_cart_to_cash(c_cart) {
+                            Ok(()) => {
+                                println!("{}", Style::new().bold().paint(
+                                    format!("Please put {} in the cash box", c_cart.disp_total())
+                                ));
                                 cart = None;
                             },
                             Err(e) => {
-                                println!("Error, unable to charge user: {}", e);
+                                println!("Error, unable to charge: {}", e);
                             }
                         }
+                    } else {
+                        println!("Nothing in cart")
                     }
-                    _ => match command {
-                        "help" | "?" => help(),
-                        "reload" => reload(&mut product_store),
-                        "products" => products(&product_store),
-                        "adduser" => adduser(&db, &args),
-                        "deposit" => deposit(&db, &args),
-                        "users" => users(&db),
-                        "deposits" => deposits(&db),
-                        "purchases" => purchases(&db),
-                        "abort" | "cancel" => {
-                            cart = None;
-                            println!("Cart abandoned");
+                },
+                _ => match (barcode::Barcode::try_parse(command), args.is_empty()) {
+                    (Some(barcode), true) => {
+                        if !barcode.check_digit() {
+                            println!("Invalid barcode")
+                        } else if let Some(product) = product_store.get(&barcode) {
+                            println!("Adding {} to cart", product.name);
+                            if cart.is_none() {
+                                cart = Some(Cart::new());
+                            }
+
+                            let c_cart = cart.as_mut().unwrap();
+                            c_cart.products.push(product.clone());
+                            c_cart.print();
+                        } else {
+                            println!("Unknown product");
+                        }
+                    },
+                    _ => match (db.get_user(command), args.is_empty(), cart.is_some()) {
+                        (Some(user), true, false) => {
+                            println!("{}", Style::new().underline().paint(format!("User {}", user.0.id)));
+                            println!("Balance: {}", user.0.disp_balance());
+                            println!("{}", Style::new().underline().paint("Recent transactions"));
+                            for t in user.1.iter().rev().take(10) {
+                                match &t.transaction {
+                                    db::TransactionType::Deposit {
+                                        amount, method
+                                    } => println!("Deposit £{:.2} ({})", *amount as f64 / 100.0, match method {
+                                        db::DepositMethod::Cash => "cash",
+                                        db::DepositMethod::BankTransfer => "bank transfer"
+                                    }),
+                                    db::TransactionType::Purchase {
+                                        total, products
+                                    } => {
+                                        println!("Purchase (total £{:.2})", *total as f64 / 100.0);
+                                        for p in products {
+                                            println!("- {} ({})", p.name, p.disp_price());
+                                        }
+                                    }
+                                }
+                                println!("Timestamp: {}", t.timestamp);
+                                println!()
+                            }
                         },
+                        (Some(user), true, true) => {
+                            match db.apply_cart_to_user(&user.0.id, cart.as_ref().unwrap()) {
+                                Ok(user) => {
+                                    println!("Charged to user {}", Style::new().bold().paint(&user.id));
+                                    println!("New balance: {}", user.disp_balance());
+                                    cart = None;
+                                },
+                                Err(e) => {
+                                    println!("Error, unable to charge user: {}", e);
+                                }
+                            }
+                        }
                         _ => println!("\x07Unknown command: {}", command),
                     }
                 }
@@ -151,6 +173,7 @@ fn help() {
     println!();
     println!("{}", Style::new().underline().paint("Buying something"));
     println!("Scan the barcode on the item to add to cart, complete transaction by typing in your account ID.");
+    println!("Alternatively type in cash to pay with cash directly into the box.");
     println!("Type 'abort' or 'cancel' at any time to cancel the cart.");
     println!();
     println!("{}", Style::new().underline().paint("Adding money"));
@@ -185,7 +208,7 @@ fn reload(products: &mut products::Products) {
 fn products(products: &products::Products) {
     println!("{}", Style::new().underline().paint("Product listing"));
     for (barcode, product) in products {
-        println!("{} - £{:.2} ({})", product.name, product.price as f64 / 100.0, barcode);
+        println!("{} - {} ({})", product.name, product.disp_price(), barcode);
     }
 }
 
@@ -282,7 +305,7 @@ fn users(db: &db::DB) {
             return;
         }
     } {
-        println!("{} - £{:.2}", user.id, user.balance as f64 / 100.0);
+        println!("{} - {}", user.id, user.disp_balance());
     }
 }
 
@@ -326,7 +349,7 @@ fn purchases(db: &db::DB) {
             } => {
                 println!("Purchase (total £{:.2}) by {} at {}", *total as f64 / 100.0, t.actor, t.timestamp);
                 for p in products {
-                    println!("- {} (£{:.2})", p.name, p.price as f64 / 100.0);
+                    println!("- {} ({})", p.name, p.disp_price());
                 }
             },
             _ => unreachable!()
