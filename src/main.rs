@@ -8,6 +8,9 @@ mod barcode;
 mod db;
 mod products;
 
+const FORBIDDEN_USERS: [&str; 11] = ["help", "?", "reload", "products", "adduser", "deposit",
+    "users", "deposits", "purchases", "abort", "cancel"];
+
 pub struct Cart {
     products: Vec<products::Product>
 }
@@ -192,6 +195,11 @@ fn adduser(db: &db::DB, args: &[&str]) {
         return;
     }
 
+    if FORBIDDEN_USERS.contains(&args[0]) {
+        println!("Error, user ID is forbidden");
+        return;
+    }
+
     match db.add_user(args[0]) {
         Ok(_) => {
             println!("User {} added", args[0]);
@@ -253,7 +261,7 @@ fn deposit(db: &db::DB, args: &[&str]) {
 
     match db.deposit_user(args[0], amount, method) {
         Ok(user) => {
-            println!("Deposited applied to user {}", amount as f64 / 100.0);
+            println!("Deposited applied to user {}", user.id);
             println!("New balance: {}", user.disp_balance());
             println!("{}", Style::new().bold().paint("Please transfer money for this deposit / put it in the cash box"));
         }
