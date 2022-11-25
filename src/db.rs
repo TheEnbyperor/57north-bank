@@ -58,7 +58,7 @@ pub enum TransactionType {
     },
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Copy)]
 pub enum DepositMethod {
     Cash,
     BankTransfer

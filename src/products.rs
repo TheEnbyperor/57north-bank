@@ -31,20 +31,17 @@ pub fn read_products() -> Result<Products, String> {
 
     for line in product_lines {
         let mut left = line.clone();
-        let barcode = match left.split_once(" ") {
+
+        let mut take_part = || match left.split_once(" ") {
             Some(v) => {
                 left = v.1;
-                v.0.trim()
+                Ok(v.0.trim())
             },
             None => return Err(format!("invalid line {}", line))
         };
-        let price = match left.split_once(" ") {
-            Some(v) => {
-                left = v.1;
-                v.0.trim()
-            },
-            None => return Err(format!("invalid line {}", line))
-        };
+
+        let barcode = take_part()?;
+        let price = take_part()?;
         let descriptor = left;
 
         let barcode = match crate::barcode::Barcode::try_parse(barcode) {

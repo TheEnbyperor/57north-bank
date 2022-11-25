@@ -10,6 +10,7 @@ mod products;
 
 const FORBIDDEN_USERS: [&str; 12] = ["help", "?", "reload", "products", "adduser", "deposit",
     "users", "deposits", "purchases", "abort", "cancel", "cash"];
+const MONZO_USERNAME: &str = "davidhibberd";
 
 pub struct Cart {
     products: Vec<products::Product>
@@ -287,6 +288,35 @@ fn deposit(db: &db::DB, args: &[&str]) {
             println!("Deposited applied to user {}", user.id);
             println!("New balance: {}", user.disp_balance());
             println!("{}", Style::new().bold().paint("Please transfer money for this deposit / put it in the cash box"));
+            if method == db::DepositMethod::BankTransfer {
+                let qr_code = qrcode_generator::to_matrix(
+                    format!("https://monzo.me/{}/{:.2}?d=57Bank", MONZO_USERNAME, amount as f64 / 100.0),
+                    qrcode_generator::QrCodeEcc::Low
+                ).unwrap();
+                for _ in 0..2 {
+                    for _ in 0..qr_code.len()+4 {
+                        print!("\u{2588}\u{2588}");
+                    }
+                    println!();
+                }
+                for row in &qr_code {
+                    print!("\u{2588}\u{2588}\u{2588}\u{2588}");
+                    for col in row {
+                        if *col {
+                            print!("  ");
+                        } else {
+                            print!("\u{2588}\u{2588}");
+                        }
+                    }
+                    println!("\u{2588}\u{2588}\u{2588}\u{2588}");
+                }
+                for _ in 0..2 {
+                    for _ in 0..qr_code.len()+4 {
+                        print!("\u{2588}\u{2588}");
+                    }
+                    println!();
+                }
+            }
         }
         Err(e) => {
             println!("Error, unable to deposit: {}", e);
