@@ -131,3 +131,6 @@ Cargo.lock
 *.pdb
 
 # End of https://www.toptal.com/developers/gitignore/api/pycharm,rust
+
+data/db
+data/history
