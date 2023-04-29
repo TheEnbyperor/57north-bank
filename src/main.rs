@@ -1,25 +1,41 @@
 #[macro_use]
 extern crate serde;
 
-use std::io::Write;
-use ansi_term::Style;
+use ansi_term::{Color, Style};
+use completion::Hintererer;
+use rustyline::{error::ReadlineError, Editor};
+use std::io::{stdout, Write, Stdout};
 
 mod barcode;
+mod completion;
 mod db;
 mod products;
 
-const FORBIDDEN_USERS: [&str; 12] = ["help", "?", "reload", "products", "adduser", "deposit",
-    "users", "deposits", "purchases", "abort", "cancel", "cash"];
+const FORBIDDEN_USERS: [&str; 13] = [
+    "help",
+    "?",
+    "reload",
+    "products",
+    "adduser",
+    "deposit",
+    "users",
+    "deposits",
+    "purchases",
+    "abort",
+    "cancel",
+    "cash",
+    "clear",
+];
 const MONZO_USERNAME: &str = "davidhibberd";
 
 pub struct Cart {
-    products: Vec<products::Product>
+    products: Vec<products::Product>,
 }
 
 impl Cart {
     fn new() -> Self {
         Self {
-            products: Vec::new()
+            products: Vec::new(),
         }
     }
 
@@ -40,7 +56,7 @@ impl Cart {
     }
 }
 
-fn main() -> std::io::Result<()> {
+fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let db = match db::DB::load() {
         Ok(d) => d,
         Err(e) => {
@@ -57,26 +73,48 @@ fn main() -> std::io::Result<()> {
     };
     let mut cart: Option<Cart> = None;
 
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let mut stdin: Editor<Hintererer, rustyline::history::FileHistory> = Editor::new()?;
+    stdin.set_helper(Some(Hintererer::new()));
+    if stdin.load_history("data/history").is_err() {
+        println!("No previous history.");
+    }
+
+    let mut stdout = stdout();
+    clear(&mut stdout);
+
     loop {
-        let mut buffer = String::new();
-        if cart.is_none() {
-            print!("{}", Style::new().bold().paint("57Bank> "));
+        let buffer = if cart.is_none() {
+            stdin.readline(&format!("{} ", Style::new().bold().paint("57Bank>")))
         } else {
-            print!("{}", Style::new().bold().paint("57Bank (cart in progress)> "));
-        }
-        stdout.flush()?;
-        stdin.read_line(&mut buffer)?;
-        buffer = buffer.trim().to_string();
+            stdin.readline(&format!(
+                "{}{}{}",
+                Style::new().bold().paint("57Bank"),
+                Style::new()
+                    .bold()
+                    .on(Color::Yellow)
+                    .paint("(cart in progress)"),
+                Style::new().bold().paint("> ")
+            ))
+        };
+
+        let buffer = match buffer {
+            Ok(t) => t,
+            Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
+                println!("{}", Style::new().bold().fg(Color::Red).paint("EXITING..."));
+                break;
+            }
+            Err(_error) => break,
+        };
 
         if !buffer.is_empty() {
+            stdin.add_history_entry(&buffer)?;
             let mut args = buffer.split_whitespace();
             let command = args.next().unwrap();
             let args = args.collect::<Vec<_>>();
 
             match command {
                 "help" | "?" => help(),
+                "clear" => clear(&mut stdout),
                 "reload" => reload(&mut product_store),
                 "products" => products(&product_store),
                 "adduser" => adduser(&db, &args),
@@ -87,17 +125,21 @@ fn main() -> std::io::Result<()> {
                 "abort" | "cancel" => {
                     cart = None;
                     println!("Cart abandoned");
-                },
+                }
                 "cash" => {
                     if cart.is_some() {
                         let c_cart = cart.as_ref().unwrap();
                         match db.apply_cart_to_cash(c_cart) {
                             Ok(()) => {
-                                println!("{}", Style::new().bold().paint(
-                                    format!("Please put {} in the cash box", c_cart.disp_total())
-                                ));
+                                println!(
+                                    "{}",
+                                    Style::new().bold().paint(format!(
+                                        "Please put {} in the cash box",
+                                        c_cart.disp_total()
+                                    ))
+                                );
                                 cart = None;
-                            },
+                            }
                             Err(e) => {
                                 println!("Error, unable to charge: {}", e);
                             }
@@ -105,7 +147,7 @@ fn main() -> std::io::Result<()> {
                     } else {
                         println!("Nothing in cart")
                     }
-                },
+                }
                 _ => match (barcode::Barcode::try_parse(command), args.is_empty()) {
                     (Some(barcode), true) => {
                         if !barcode.check_digit() {
@@ -122,23 +164,28 @@ fn main() -> std::io::Result<()> {
                         } else {
                             println!("Unknown product");
                         }
-                    },
+                    }
                     _ => match (db.get_user(command), args.is_empty(), cart.is_some()) {
                         (Some(user), true, false) => {
-                            println!("{}", Style::new().underline().paint(format!("User {}", user.0.id)));
+                            println!(
+                                "{}",
+                                Style::new()
+                                    .underline()
+                                    .paint(format!("User {}", user.0.id))
+                            );
                             println!("Balance: {}", user.0.disp_balance());
                             println!("{}", Style::new().underline().paint("Recent transactions"));
                             for t in user.1.iter().rev().take(10) {
                                 match &t.transaction {
-                                    db::TransactionType::Deposit {
-                                        amount, method
-                                    } => println!("Deposit £{:.2} ({})", *amount as f64 / 100.0, match method {
-                                        db::DepositMethod::Cash => "cash",
-                                        db::DepositMethod::BankTransfer => "bank transfer"
-                                    }),
-                                    db::TransactionType::Purchase {
-                                        total, products
-                                    } => {
+                                    db::TransactionType::Deposit { amount, method } => println!(
+                                        "Deposit £{:.2} ({})",
+                                        *amount as f64 / 100.0,
+                                        match method {
+                                            db::DepositMethod::Cash => "cash",
+                                            db::DepositMethod::BankTransfer => "bank transfer",
+                                        }
+                                    ),
+                                    db::TransactionType::Purchase { total, products } => {
                                         println!("Purchase (total £{:.2})", *total as f64 / 100.0);
                                         for p in products {
                                             println!("- {} ({})", p.name, p.disp_price());
@@ -148,29 +195,48 @@ fn main() -> std::io::Result<()> {
                                 println!("Timestamp: {}", t.timestamp);
                                 println!()
                             }
-                        },
+                        }
                         (Some(user), true, true) => {
                             match db.apply_cart_to_user(&user.0.id, cart.as_ref().unwrap()) {
                                 Ok(user) => {
-                                    println!("Charged to user {}", Style::new().bold().paint(&user.id));
+                                    println!(
+                                        "Charged to user {}",
+                                        Style::new().bold().paint(&user.id)
+                                    );
                                     println!("New balance: {}", user.disp_balance());
                                     cart = None;
-                                },
+                                }
                                 Err(e) => {
                                     println!("Error, unable to charge user: {}", e);
                                 }
                             }
                         }
                         _ => println!("\x07Unknown command: {}", command),
-                    }
-                }
+                    },
+                },
             }
         }
     }
+
+    stdin.save_history("data/history")?;
+    clear(&mut stdout);
+
+    Ok(())
+}
+
+fn clear(stdout: &mut Stdout) {
+    print!("{esc}[2J{esc}[1;1H", esc = 27 as char);
+    stdout.flush().unwrap();
 }
 
 fn help() {
-    println!("{}", Style::new().bold().underline().paint("--- 57North Snack Bank ---"));
+    println!(
+        "{}",
+        Style::new()
+            .bold()
+            .underline()
+            .paint("--- 57North Snack Bank ---")
+    );
     println!();
     println!("{}", Style::new().underline().paint("Buying something"));
     println!("Scan the barcode on the item to add to cart, complete transaction by typing in your account ID.");
@@ -189,7 +255,12 @@ fn help() {
     println!("{}", Style::new().underline().paint("Check balance"));
     println!("Type your user ID to view balance and recent transactions.");
     println!();
-    println!("{}", Style::new().underline().paint("Other commands (generally internal use only)"));
+    println!(
+        "{}",
+        Style::new()
+            .underline()
+            .paint("Other commands (generally internal use only)")
+    );
     println!("- reload");
     println!("- users");
     println!("- deposits");
@@ -227,7 +298,7 @@ fn adduser(db: &db::DB, args: &[&str]) {
     match db.add_user(args[0]) {
         Ok(_) => {
             println!("User {} added", args[0]);
-        },
+        }
         Err(e) => {
             println!("Error, unable to add user: {}", e);
         }
@@ -258,8 +329,8 @@ fn deposit(db: &db::DB, args: &[&str]) {
                     println!("Invalid amount");
                     continue;
                 }
-                break (amount * 100.0) as u32
-            },
+                break (amount * 100.0) as u32;
+            }
             Err(_) => println!("Invalid amount"),
         }
     };
@@ -287,14 +358,24 @@ fn deposit(db: &db::DB, args: &[&str]) {
         Ok(user) => {
             println!("Deposited applied to user {}", user.id);
             println!("New balance: {}", user.disp_balance());
-            println!("{}", Style::new().bold().paint("Please transfer money for this deposit / put it in the cash box"));
+            println!(
+                "{}",
+                Style::new()
+                    .bold()
+                    .paint("Please transfer money for this deposit / put it in the cash box")
+            );
             if method == db::DepositMethod::BankTransfer {
                 let qr_code = qrcode_generator::to_matrix(
-                    format!("https://monzo.me/{}/{:.2}?d=57Bank", MONZO_USERNAME, amount as f64 / 100.0),
-                    qrcode_generator::QrCodeEcc::Low
-                ).unwrap();
+                    format!(
+                        "https://monzo.me/{}/{:.2}?d=57Bank",
+                        MONZO_USERNAME,
+                        amount as f64 / 100.0
+                    ),
+                    qrcode_generator::QrCodeEcc::Low,
+                )
+                .unwrap();
                 for _ in 0..2 {
-                    for _ in 0..qr_code.len()+4 {
+                    for _ in 0..qr_code.len() + 4 {
                         print!("\u{2588}\u{2588}");
                     }
                     println!();
@@ -311,7 +392,7 @@ fn deposit(db: &db::DB, args: &[&str]) {
                     println!("\u{2588}\u{2588}\u{2588}\u{2588}");
                 }
                 for _ in 0..2 {
-                    for _ in 0..qr_code.len()+4 {
+                    for _ in 0..qr_code.len() + 4 {
                         print!("\u{2588}\u{2588}");
                     }
                     println!();
@@ -348,22 +429,41 @@ fn deposits(db: &db::DB) {
             println!("Error, unable to list transactions: {}", e);
             return;
         }
-    }.iter().filter(|t| matches!(t.transaction, db::TransactionType::Deposit { .. })).rev().take(10) {
+    }
+    .iter()
+    .filter(|t| matches!(t.transaction, db::TransactionType::Deposit { .. }))
+    .rev()
+    .take(10)
+    {
         match &t.transaction {
-            db::TransactionType::Deposit {
-                amount, method
-            } => {
-                println!("Deposit £{:.2} ({}), by {} at {}", *amount as f64 / 100.0, match method {
-                    db::DepositMethod::Cash => "cash",
-                    db::DepositMethod::BankTransfer => "bank transfer"
-                }, t.actor, t.timestamp);
-            },
-            _ => unreachable!()
+            db::TransactionType::Deposit { amount, method } => {
+                println!(
+                    "Deposit £{:.2} ({}), by {} at {}",
+                    *amount as f64 / 100.0,
+                    match method {
+                        db::DepositMethod::Cash => "cash",
+                        db::DepositMethod::BankTransfer => "bank transfer",
+                    },
+                    t.actor,
+                    t.timestamp
+                );
+            }
+            _ => unreachable!(),
         }
     }
 }
 
 fn purchases(db: &db::DB) {
+    if db.transactions().is_ok_and(|tx| tx.is_empty()) {
+        println!(
+            "{}",
+            Style::new()
+                .underline()
+                .fg(Color::Red)
+                .paint("No recent transactions")
+        );
+        return;
+    }
     println!("{}", Style::new().underline().paint("Recent transactions"));
 
     for t in match db.transactions() {
@@ -372,17 +472,25 @@ fn purchases(db: &db::DB) {
             println!("Error, unable to list transactions: {}", e);
             return;
         }
-    }.iter().filter(|t| matches!(t.transaction, db::TransactionType::Purchase { .. })).rev().take(10) {
+    }
+    .iter()
+    .filter(|t| matches!(t.transaction, db::TransactionType::Purchase { .. }))
+    .rev()
+    .take(10)
+    {
         match &t.transaction {
-            db::TransactionType::Purchase {
-                products, total
-            } => {
-                println!("Purchase (total £{:.2}) by {} at {}", *total as f64 / 100.0, t.actor, t.timestamp);
+            db::TransactionType::Purchase { products, total } => {
+                println!(
+                    "Purchase (total £{:.2}) by {} at {}",
+                    *total as f64 / 100.0,
+                    t.actor,
+                    t.timestamp
+                );
                 for p in products {
                     println!("- {} ({})", p.name, p.disp_price());
                 }
-            },
-            _ => unreachable!()
+            }
+            _ => unreachable!(),
         }
     }
 }
