@@ -1,17 +1,20 @@
 #[macro_use]
 extern crate serde;
 
+use crate::{pcsc::Reader, db::CardNameOrID};
+use ::pcsc::Scope;
 use ansi_term::{Color, Style};
 use completion::Hintererer;
 use rustyline::{error::ReadlineError, Editor};
-use std::io::{stdout, Write, Stdout};
+use std::io::{stdout, Stdout, Write};
 
 mod barcode;
 mod completion;
 mod db;
+mod pcsc;
 mod products;
 
-const FORBIDDEN_USERS: [&str; 13] = [
+const FORBIDDEN_USERS: [&str; 15] = [
     "help",
     "?",
     "reload",
@@ -25,6 +28,8 @@ const FORBIDDEN_USERS: [&str; 13] = [
     "cancel",
     "cash",
     "clear",
+    "regcard",
+    "delcard",
 ];
 const MONZO_USERNAME: &str = "davidhibberd";
 
@@ -82,6 +87,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let mut stdout = stdout();
     clear(&mut stdout);
 
+    let mut reader = Reader::new(Scope::Terminal)?;
+
     loop {
         let buffer = if cart.is_none() {
             stdin.readline(&format!("{} ", Style::new().bold().paint("57Bank>")))
@@ -118,6 +125,8 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 "reload" => reload(&mut product_store),
                 "products" => products(&product_store),
                 "adduser" => adduser(&db, &args),
+                "regcard" => register_card(&args, &db, &mut reader),
+                "delcard" => delete_card(&args, &db, &mut reader),
                 "deposit" => deposit(&db, &args),
                 "users" => users(&db),
                 "deposits" => deposits(&db),
@@ -255,6 +264,10 @@ fn help() {
     println!("{}", Style::new().underline().paint("Check balance"));
     println!("Type your user ID to view balance and recent transactions.");
     println!();
+    println!("{}", Style::new().underline().paint("Adding and removing cards"));
+    println!("Type 'regcard <id> [name]' with your desired account ID and optionally the name of the card to start the card registration process");
+    println!("Type 'delcard <id> [name]' with your desired account ID and optionally the name of the card to start the card deletion process");
+    println!();
     println!(
         "{}",
         Style::new()
@@ -348,6 +361,8 @@ fn deposit(db: &db::DB, args: &[&str]) {
         } else if buffer == "cash" {
             break db::DepositMethod::Cash;
         } else if buffer == "bank" {
+            #[derive(Debug, Serialize, Deserialize, Clone)]
+            pub struct CardUID {}
             break db::DepositMethod::BankTransfer;
         } else {
             println!("Invalid method")
@@ -491,6 +506,88 @@ fn purchases(db: &db::DB) {
                 }
             }
             _ => unreachable!(),
+        }
+    }
+}
+
+fn register_card(args: &[&str], db: &db::DB, reader: &mut Reader) {
+    if args.is_empty() {
+        println!("Usage: regcard <id> [card name]");
+        return;
+    }
+    let id = args[0];
+
+    let name = if args.len() > 1 {
+        Some(args[1..].join(" "))
+    } else {
+        None
+    };
+
+    println!("Please present your card (1/2)");
+
+    let mut card = reader.connect().unwrap();
+    let tx1 = card.transaction_blocking(reader).unwrap();
+    let uid1 = tx1
+        .get_uid()
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<String>();
+    println!("Please present your card (2/2)");
+
+    let mut card = reader.connect().unwrap();
+    let tx2 = card.transaction_blocking(reader).unwrap();
+    let uid2 = tx2
+        .get_uid()
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<String>();
+    println!("Validating card...");
+
+    if uid1 != uid2 {
+        println!("Your card does not have a static UID, sorry :(");
+        return;
+    }
+
+    match db.add_card_to_user(id, name, uid1) {
+        Ok((name, uid)) => {
+            println!("A card with ID {uid} and name '{name}' has been associated with your user")
+        }
+        Err(e) => println!("Error, failed to write the card information to your user: {e}"),
+    }
+}
+
+fn delete_card(args: &[&str], db: &db::DB, reader: &mut Reader) {
+    if args.is_empty() {
+        println!("Usage: delcard <id> [card name]");
+        return;
+    }
+    let id = args[0];
+    let name = if args.len() > 1 {
+        Some(args[1..].join(" "))
+    } else {
+        None
+    };
+
+    if name.is_none() {
+        println!("Please present the card you would like to delete");
+
+        let mut card = reader.connect().unwrap();
+        let tx = card.transaction_blocking(reader).unwrap();
+        let uid = tx
+            .get_uid()
+            .iter()
+            .map(|b| b.to_string())
+            .collect::<String>();
+
+        match db.delete_card(id, CardNameOrID::ID(uid.clone())) {
+            Ok(_) => println!("Successfully removed the card '{uid}' from the database"),
+            Err(e) => println!("Error, failed to remove the card: {e}"),
+        }
+    } else {
+        let name = name.unwrap();
+        match db.delete_card(id, CardNameOrID::Name(name.clone())) {
+            Ok(_) => println!("Successfully removed the card '{name}' from the database"),
+            Err(e) => println!("Error, failed to remove the card: {e}"),
         }
     }
 }

@@ -17,6 +17,7 @@ chrono = { version = "0.4", features = ["serde"] }
 qrcode-generator = "4"
 rustyline = "11.0.0"
 radix_trie = "0.2.1"
+pcsc = "2.8.0"
 
 [[bin]]
 name = "57bank"

@@ -1,25 +1,31 @@
-use std::fmt::Formatter;
-use chrono::prelude::*;
 use ansi_term::Style;
+use chrono::prelude::*;
+use std::{collections::HashSet, fmt::Formatter};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InnerDB {
     pub users: std::collections::HashMap<String, User>,
-    pub transactions: Vec<Transaction>
+    pub transactions: Vec<Transaction>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct User {
     pub id: String,
     pub balance: i32,
+
+    // uid, name
+    pub cards: Option<HashSet<(String, String)>>,
 }
 
 impl User {
     pub fn disp_balance(&self) -> String {
         if self.balance < 0 {
-            Style::new().fg(ansi_term::Color::Red).paint(format!("-£{:.2}", -self.balance as f64 / 100.0)).to_string()
+            Style::new()
+                .fg(ansi_term::Color::Red)
+                .paint(format!("-£{:.2}", -self.balance as f64 / 100.0))
+                .to_string()
         } else {
-           format!("£{:.2}", self.balance as f64 / 100.0)
+            format!("£{:.2}", self.balance as f64 / 100.0)
         }
     }
 }
@@ -34,14 +40,14 @@ pub struct Transaction {
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub enum TransactionActor {
     User(String),
-    Cash
+    Cash,
 }
 
 impl std::fmt::Display for TransactionActor {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::User(id) => write!(f, "user {}", id),
-            Self::Cash => write!(f, "cash")
+            Self::Cash => write!(f, "cash"),
         }
     }
 }
@@ -61,7 +67,7 @@ pub enum TransactionType {
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Copy)]
 pub enum DepositMethod {
     Cash,
-    BankTransfer
+    BankTransfer,
 }
 
 type DBStore = rustbreak::PathDatabase<InnerDB, rustbreak::deser::Ron>;
@@ -70,21 +76,28 @@ pub struct DB(DBStore);
 
 impl DB {
     pub fn load() -> Result<DB, String> {
-        Ok(DB(DBStore::load_from_path_or_else("./data/db".into(), || {
-            InnerDB {
+        Ok(DB(DBStore::load_from_path_or_else(
+            "./data/db".into(),
+            || InnerDB {
                 users: std::collections::HashMap::new(),
                 transactions: Vec::new(),
-            }
-        }).map_err(|e| format!("{:?}", e))?))
+            },
+        )
+        .map_err(|e| format!("{:?}", e))?))
     }
 
     pub fn get_user(&self, id: &str) -> Option<(User, Vec<Transaction>)> {
         let mut data = self.0.get_data(true).ok()?;
         let u = data.users.remove(id)?;
-        let t = data.transactions.iter().filter(|t| match &t.actor {
-            TransactionActor::User(u) => u == id,
-            TransactionActor::Cash => false,
-        }).cloned().collect::<Vec<_>>();
+        let t = data
+            .transactions
+            .iter()
+            .filter(|t| match &t.actor {
+                TransactionActor::User(u) => u == id,
+                TransactionActor::Cash => false,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         Some((u, t))
     }
 
@@ -119,7 +132,7 @@ impl DB {
                 transaction: TransactionType::Purchase {
                     products: cart.products.clone(),
                     total: cart.total(),
-                }
+                },
             });
 
             u
@@ -141,7 +154,7 @@ impl DB {
                 transaction: TransactionType::Purchase {
                     products: cart.products.clone(),
                     total: cart.total(),
-                }
+                },
             });
         }
 
@@ -149,7 +162,12 @@ impl DB {
         Ok(())
     }
 
-    pub fn deposit_user(&self, id: &str, amount: u32, method: DepositMethod) -> Result<User, String> {
+    pub fn deposit_user(
+        &self,
+        id: &str,
+        amount: u32,
+        method: DepositMethod,
+    ) -> Result<User, String> {
         self.0.load().map_err(|e| format!("{:?}", e))?;
 
         let u = {
@@ -167,10 +185,7 @@ impl DB {
             data.transactions.push(Transaction {
                 timestamp: Utc::now(),
                 actor: TransactionActor::User(id.to_string()),
-                transaction: TransactionType::Deposit {
-                    amount,
-                    method,
-                }
+                transaction: TransactionType::Deposit { amount, method },
             });
 
             u
@@ -190,13 +205,84 @@ impl DB {
                 return Err(format!("user {} already exists", id));
             }
 
-            data.users.insert(id.to_string(), User {
-                id: id.to_string(),
-                balance: 0,
-            });
+            data.users.insert(
+                id.to_string(),
+                User {
+                    id: id.to_string(),
+                    balance: 0,
+                    cards: Some(HashSet::new()),
+                },
+            );
         }
 
         self.0.save().map_err(|e| format!("{:?}", e))?;
         Ok(())
     }
+
+    pub fn add_card_to_user(
+        &self,
+        id: &str,
+        card_name: Option<impl ToString>,
+        card_uid: impl ToString,
+    ) -> Result<(String, String), String> {
+        let uid = card_uid.to_string();
+        let name = match card_name.map(|n| n.to_string()) {
+            Some(n) => n,
+            None => uid[0..5].to_owned(),
+        };
+
+        let mut data = self.0.borrow_data_mut().map_err(|e| format!("{:?}", e))?;
+        let user = data
+            .users
+            .get_mut(id)
+            .ok_or_else(|| String::from("This user does not exist."))?;
+
+        match &mut user.cards {
+            Some(c) => {
+                c.insert((uid, name.clone()));
+            }
+            None => user.cards = Some(HashSet::from_iter([(uid, name.clone())])),
+        }
+
+        drop(data);
+
+        self.0.save().map_err(|e| format!("{:?}", e))?;
+
+        Ok((name, card_uid.to_string()))
+    }
+
+    pub fn delete_card(&self, id: &str, name_or_id: CardNameOrID) -> Result<(), String> {
+        let mut data = self.0.borrow_data_mut().map_err(|e| format!("{:?}", e))?;
+        let user = data
+            .users
+            .get_mut(id)
+            .ok_or_else(|| String::from("This user does not exist."))?;
+
+        match user.cards.as_mut() {
+            Some(c) => {
+                let ccopy = c.clone();
+                let identifier = ccopy
+                    .iter()
+                    .find(|(uid, name)| match &name_or_id {
+                        CardNameOrID::ID(id) => uid == id,
+                        CardNameOrID::Name(username) => name == username,
+                    })
+                    .ok_or_else(|| String::from("Error, no card found with that name or ID"))?;
+
+                c.remove(identifier);
+            }
+            None => return Err(String::from("Error, no cards to delete")),
+        }
+
+        drop(data);
+
+        self.0.save().map_err(|e| format!("{:?}", e))?;
+
+        Ok(())
+    }
+}
+
+pub enum CardNameOrID {
+    Name(String),
+    ID(String),
 }
