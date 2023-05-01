@@ -101,6 +101,31 @@ impl DB {
         Some((u, t))
     }
 
+    pub fn get_user_by_card(&self, uid: &str) -> Option<(User, Vec<Transaction>)> {
+        let data = self.0.get_data(true).ok()?;
+
+        let (id, u) = data.users.into_iter().find(|u| {
+            u.1.cards.as_ref().is_some_and(|cards| {
+                cards
+                    .into_iter()
+                    .find(|(card_id, _)| uid == card_id)
+                    .is_some()
+            })
+        })?;
+
+        // let u = data.users.remove(id)?;
+        let t = data
+            .transactions
+            .iter()
+            .filter(|t| match &t.actor {
+                TransactionActor::User(u) => u == &id,
+                TransactionActor::Cash => false,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        Some((u, t))
+    }
+
     pub fn users(&self) -> Result<Vec<User>, String> {
         let data = self.0.get_data(true).map_err(|e| format!("{:?}", e))?;
         Ok(data.users.into_values().collect())
