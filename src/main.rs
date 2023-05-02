@@ -20,8 +20,6 @@ use std::{
 };
 use tokio::{select, sync::mpsc::{self, Receiver}};
 
-type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync>>;
-
 mod barcode;
 mod completion;
 mod db;
@@ -228,7 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "products" => products(&product_store),
                 "adduser" => adduser(&db, &args),
                 "regcard" => register_card(&args, &db, &mut card_rx_handle).await,
-                // "delcard" => delete_card(&args, &db, &mut card_rx_handle),
+                "delcard" => delete_card(&args, &db, &mut card_rx_handle).await,
                 "deposit" => deposit(&db, &args),
                 "users" => users(&db),
                 "deposits" => deposits(&db),
@@ -701,38 +699,32 @@ async fn register_card(args: &[&str], db: &db::DB, reader: &mut Receiver<Vec<u8>
     }
 }
 
-// fn delete_card(args: &[&str], db: &db::DB, reader: &mut Reader) {
-//     if args.is_empty() {
-//         println!("Usage: delcard <id> [card name]");
-//         return;
-//     }
-//     let id = args[0];
-//     let name = if args.len() > 1 {
-//         Some(args[1..].join(" "))
-//     } else {
-//         None
-//     };
+async fn delete_card(args: &[&str], db: &db::DB, reader: &mut Receiver<Vec<u8>>) {
+    if args.is_empty() {
+        println!("Usage: delcard <id> [card name]");
+        return;
+    }
+    let id = args[0];
+    let name = if args.len() > 1 {
+        Some(args[1..].join(" "))
+    } else {
+        None
+    };
 
-//     if name.is_none() {
-//         println!("Please present the card you would like to delete");
+    if name.is_none() {
+        println!("Please present the card you would like to delete");
+        let uid = reader.recv().await.unwrap()
+            .iter().map(|b| b.to_string()).collect::<String>();
 
-//         let mut card = reader.connect().unwrap();
-//         let tx = card.transaction_blocking(reader).unwrap();
-//         let uid = tx
-//             .get_uid()
-//             .iter()
-//             .map(|b| b.to_string())
-//             .collect::<String>();
-
-//         match db.delete_card(id, CardNameOrID::ID(uid.clone())) {
-//             Ok(_) => println!("Successfully removed the card '{uid}' from the database"),
-//             Err(e) => println!("Error, failed to remove the card: {e}"),
-//         }
-//     } else {
-//         let name = name.unwrap();
-//         match db.delete_card(id, CardNameOrID::Name(name.clone())) {
-//             Ok(_) => println!("Successfully removed the card '{name}' from the database"),
-//             Err(e) => println!("Error, failed to remove the card: {e}"),
-//         }
-//     }
-// }
+        match db.delete_card(id, db::CardNameOrID::ID(uid.clone())) {
+            Ok(_) => println!("Successfully removed the card '{uid}' from the database"),
+            Err(e) => println!("Error, failed to remove the card: {e}"),
+        }
+    } else {
+        let name = name.unwrap();
+        match db.delete_card(id, db::CardNameOrID::Name(name.clone())) {
+            Ok(_) => println!("Successfully removed the card '{name}' from the database"),
+            Err(e) => println!("Error, failed to remove the card: {e}"),
+        }
+    }
+}
