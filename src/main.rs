@@ -7,24 +7,18 @@ extern crate serde;
 use ansi_term::{Color, Style};
 use completion::Hintererer;
 use db::{User, Transaction};
-use nfc1::target_info::{Iso14443a, TargetInfo};
+use nfc1::target_info;
 use rustyline::{error::ReadlineError, Editor};
 use std::{
     future::Future,
-    io::{stdout, Stdout, Write},
+    io::{Stdout, Write},
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
 };
-use tokio::{
-    select,
-    sync::{
-        mpsc::{self, Receiver},
-        Mutex,
-    },
-};
+use tokio::{select, sync::mpsc::{self, Receiver}};
 
 type BoxFuture<T> = Pin<Box<dyn Future<Output = T> + Send + Sync>>;
 
@@ -82,7 +76,7 @@ impl Cart {
 }
 
 #[tokio::main]
-async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let db = match db::DB::load() {
         Ok(d) => d,
         Err(e) => {
@@ -97,74 +91,65 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
     };
-    let cart: Arc<Mutex<Option<Cart>>> = Arc::new(Mutex::new(None));
+    let mut cart: Option<Cart> = None;
 
-    let stdin: Arc<Mutex<Editor<Hintererer, rustyline::history::FileHistory>>> =
-        Arc::new(Mutex::new(Editor::new()?));
-    let mut stdin_lock = stdin.lock().await;
-    stdin_lock.set_helper(Some(Hintererer::new()));
-    if stdin_lock.load_history("data/history").is_err() {
-        println!("No previous history.");
-    }
-    drop(stdin_lock);
-
-    let mut stdout = stdout();
+    let mut stdout = std::io::stdout();
     clear(&mut stdout);
 
     let (card_tx, mut card_rx_handle) = mpsc::channel::<Vec<u8>>(1);
     let stop_reader = Arc::new(AtomicBool::new(false));
     let stop_clone = Arc::clone(&stop_reader);
 
-    let cards_joinhandle = tokio::task::spawn_blocking::<
-        _,
-        Result<(), Box<dyn std::error::Error + Send + Sync>>,
-    >(move || {
+    std::thread::spawn(move || {
         let mut context = nfc1::Context::new().unwrap();
         let mut device = context.open().unwrap();
-
         device.initiator_init().unwrap();
 
         loop {
-            if stop_clone.load(Ordering::SeqCst) {
+            if stop_clone.load(Ordering::Relaxed) {
                 break;
             }
-            match device.initiator_select_passive_target(&nfc1::Modulation {
+            match device.initiator_poll_target(&[nfc1::Modulation {
                 modulation_type: nfc1::ModulationType::Iso14443a,
                 baud_rate: nfc1::BaudRate::Baud106,
-            }) {
+            }], 255, std::time::Duration::from_millis(300)) {
                 Ok(target) => {
-                    if let TargetInfo::Iso14443a(Iso14443a { uid, uid_len, .. }) =
-                        target.target_info
-                    {
-                        card_tx.blocking_send(uid[..uid_len].to_vec())?;
+                    match target.target_info {
+                        target_info::TargetInfo::Iso14443a(target_info::Iso14443a { uid, uid_len, .. }) => {
+                            if uid_len != 0 {
+                                card_tx.blocking_send(uid[..uid_len].to_vec()).unwrap();
+                                std::thread::sleep(std::time::Duration::from_secs(1));
+                            }
+                        },
+                        a => {
+                            println!("Unknown target: {:?}", a);
+                        }
                     }
                 }
                 Err(_) => continue,
             }
         }
-
-        Ok(())
     });
 
-    let (stdout_tx, mut stdout_rx_handle) = mpsc::channel::<StdoutMsg>(1);
+    let (stdin_tx, mut stdin_rx_handle) = mpsc::channel::<StdoutMsg>(5);
+    let (stdin_ready_tx, mut stdin_ready_rx) = mpsc::channel::<bool>(1);
 
-    let stdin_c = Arc::clone(&stdin);
-    let cart_c = Arc::clone(&cart);
     let stop_clone = Arc::clone(&stop_reader);
 
-    let stdout_joinhandle = tokio::spawn::<
-        BoxFuture<Result<(), Box<dyn std::error::Error + Send + Sync>>>,
-    >(Box::pin(async move {
-        loop {
-            let permit = stdout_tx.reserve().await?;
+    std::thread::spawn(move || {
+        let mut stdin = Editor::new().unwrap();
+        stdin.set_helper(Some(Hintererer::new()));
+        if stdin.load_history("data/history").is_err() {
+            println!("No previous history.");
+        }
 
-            let buffer = if cart_c.lock().await.is_none() {
-                stdin_c
-                    .lock()
-                    .await
-                    .readline(&format!("{} ", Style::new().bold().paint("57Bank>")))
+        let mut cart_in_progress = false;
+
+        loop {
+            let buffer = if !cart_in_progress {
+                stdin.readline(&format!("{} ", Style::new().bold().paint("57Bank>")))
             } else {
-                stdin_c.lock().await.readline(&format!(
+                stdin.readline(&format!(
                     "{}{}{}",
                     Style::new().bold().paint("57Bank"),
                     Style::new()
@@ -176,50 +161,35 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             };
 
             let buffer = match buffer {
-                Ok(t) => StdoutMsg::Text(t),
+                Ok(t) => {
+                    stdin.add_history_entry(&t).unwrap();
+                    StdoutMsg::Text(t)
+                },
                 Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
                     println!("{}", Style::new().bold().fg(Color::Red).paint("EXITING..."));
-                    StdoutMsg::Signal(Signal::Kill);
-                    stop_clone.store(true, Ordering::SeqCst);
-                    return Ok(());
+                    StdoutMsg::Signal(Signal::Kill)
                 }
                 Err(_error) => StdoutMsg::Signal(Signal::Kill),
             };
 
-            permit.send(buffer);
+            stdin_tx.blocking_send(buffer).unwrap();
+            cart_in_progress = match stdin_ready_rx.blocking_recv() {
+                Some(b) => b,
+                None => break
+            };
         }
-    }));
+
+        stdin.save_history("data/history").unwrap();
+    });
 
     loop {
-        // let buffer = if cart.is_none() {
-        //     stdin.readline(&format!("{} ", Style::new().bold().paint("57Bank>")))
-        // } else {
-        //     stdin.readline(&format!(
-        //         "{}{}{}",
-        //         Style::new().bold().paint("57Bank"),
-        //         Style::new()
-        //             .bold()
-        //             .on(Color::Yellow)
-        //             .paint("(cart in progress)"),
-        //         Style::new().bold().paint("> ")
-        //     ))
-        // };
-
-        // let buffer = match buffer {
-        //     Ok(t) => t,
-        //     Err(ReadlineError::Interrupted | ReadlineError::Eof) => {
-        //         println!("{}", Style::new().bold().fg(Color::Red).paint("EXITING..."));
-        //         break;
-        //     }
-        //     Err(_error) => break,
-        // };
-
         let buffer = select! {
-            msg = stdout_rx_handle.recv() => {
+            msg = stdin_rx_handle.recv() => {
                 match msg {
                     Some(StdoutMsg::Text(t)) => t,
                     Some(StdoutMsg::Signal(_)) => {
-                        stdout_rx_handle.close();
+                        stop_clone.store(true, Ordering::Relaxed);
+                        stdin_rx_handle.close();
                         break
                     },
                     None => continue,
@@ -232,27 +202,21 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         Some(u) => u,
                         None => continue,
                     };
-                    let cart_c = Arc::clone(&cart);
-                    let cart_unlocked = cart_c.lock().await;
 
-                    if cart_unlocked.is_none() {
+                    if cart.is_none() {
                         println!();
                         user_info(user);
                         continue;
                     }
-                    drop(cart_unlocked);
 
                     println!();
-                    complete_cart(&db, user, Arc::clone(&cart)).await;
+                    complete_cart(&db, user, &mut cart).await;
                 }
                 continue;
             }
         };
 
         if !buffer.is_empty() {
-            let mut stdin_l = stdin.lock().await;
-            stdin_l.add_history_entry(&buffer)?;
-            drop(stdin_l);
             let mut args = buffer.split_whitespace();
             let command = args.next().unwrap();
             let args = args.collect::<Vec<_>>();
@@ -270,12 +234,11 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                 "deposits" => deposits(&db),
                 "purchases" => purchases(&db),
                 "abort" | "cancel" => {
-                    *cart.lock().await = None;
+                    cart = None;
                     println!("Cart abandoned");
                 }
                 "cash" => {
-                    if cart.lock().await.is_some() {
-                        let mut cart = cart.lock().await;
+                    if cart.is_some() {
                         let c_cart = cart.as_ref().unwrap();
                         match db.apply_cart_to_cash(c_cart) {
                             Ok(()) => {
@@ -286,7 +249,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                                         c_cart.disp_total()
                                     ))
                                 );
-                                *cart = None;
+                                cart = None;
                             }
                             Err(e) => {
                                 println!("Error, unable to charge: {}", e);
@@ -302,11 +265,10 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             println!("Invalid barcode")
                         } else if let Some(product) = product_store.get(&barcode) {
                             println!("Adding {} to cart", product.name);
-                            if cart.lock().await.is_none() {
-                                *cart.lock().await = Some(Cart::new());
+                            if cart.is_none() {
+                                cart = Some(Cart::new());
                             }
 
-                            let mut cart = cart.lock().await;
                             let c_cart = cart.as_mut().unwrap();
                             c_cart.products.push(product.clone());
                             c_cart.print();
@@ -317,7 +279,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     _ => match (
                         db.get_user(command),
                         args.is_empty(),
-                        cart.lock().await.is_some(),
+                        cart.is_some(),
                     ) {
                         (Some(user), true, false) => {
                             println!(
@@ -350,33 +312,27 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         (Some(user), true, true) => {
-                            let cart = Arc::clone(&cart);
-                            complete_cart(&db, user, cart).await
+                            complete_cart(&db, user, &mut cart).await
                         }
                         _ => println!("\x07Unknown command: {}", command),
                     },
                 },
             }
         }
+        stdin_ready_tx.send(cart.is_some()).await.unwrap();
     }
 
-    stdin.lock().await.save_history("data/history")?;
     clear(&mut stdout);
-
-    cards_joinhandle.abort();
-    // stdout_joinhandle.abort();
 
     Ok(())
 }
 
-async fn complete_cart(db: &db::DB, user: (User, Vec<Transaction>), cart: Arc<Mutex<Option<Cart>>>) {
-    let cart_unlocked = cart.lock().await;
-    match db.apply_cart_to_user(&user.0.id, cart_unlocked.as_ref().unwrap()) {
+async fn complete_cart(db: &db::DB, user: (User, Vec<Transaction>), cart: &mut Option<Cart>) {
+    match db.apply_cart_to_user(&user.0.id, cart.as_ref().unwrap()) {
         Ok(user) => {
             println!("Charged to user {}", Style::new().bold().paint(&user.id));
             println!("New balance: {}", user.disp_balance());
-            *cart.lock().await = None;
-            drop(cart_unlocked);
+            *cart = None;
         }
         Err(e) => {
             println!("Error, unable to charge user: {}", e);

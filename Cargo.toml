@@ -17,9 +17,8 @@ chrono = { version = "0.4", features = ["serde"] }
 qrcode-generator = "4"
 rustyline = "11.0.0"
 radix_trie = "0.2.1"
-pcsc = "2.8.0"
 tokio = { version = "1.28.0", features = ["full"] }
-nfc1 = "0.5.2"
+nfc1 = { version = "0.5.2" }
 
 [[bin]]
 name = "57bank"
